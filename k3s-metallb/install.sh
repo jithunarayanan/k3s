@@ -1,15 +1,24 @@
 #!/bin/bash
-# master and work nodes public address
-master1=10.10.1.145
-master2=10.10.1.155
-worker1=10.10.1.121
-worker2=10.10.1.122
+# Version of Kube-VIP to deploy
+KVVERSION="v0.6.3"
 
 # K3S Version
 k3sVersion="v1.32.3+k3s1"
 
+# Set the IP addresses of the master and work nodes
+master1=10.10.1.145
+master2=10.10.1.155
+worker1=10.10.1.125
+worker2=10.10.1.126
+
 # User of remote machines
-user=ubuntu
+user=vagrant
+
+# Interface used on remotes
+interface=enp0s8
+
+# Set the virtual IP address (VIP)
+vip=10.10.1.110
 
 # Array of master nodes
 masters=($master2)
@@ -23,11 +32,23 @@ all=($master1 $master2 $worker1 $worker2)
 # Array of all minus master
 allnomaster1=($master2 $worker1 $worker2)
 
+#Loadbalancer IP range
+lbrange=10.10.1.112-10.10.1.122
+
+certName=id_rsa
+
+#ssh config file
+config_file=~/.ssh/config
+
+
 # For testing purposes - in case time is wrong due to VM snapshots
 sudo timedatectl set-ntp off
 sudo timedatectl set-ntp on
 
-
+# Move SSH certs to ~/.ssh and change permissions
+# cp /home/$user/{$certName,$certName.pub} /home/$user/.ssh
+# chmod 600 /home/$user/.ssh/$certName 
+# chmod 644 /home/$user/.ssh/$certName.pub
 
 # Install k3sup to local machine if not already present
 if ! command -v k3sup version &> /dev/null
@@ -75,9 +96,14 @@ else
   fi
 fi
 
+# #add ssh keys for all nodes
+# for node in "${all[@]}"; do
+#   ssh-copy-id $user@$node
+# done
+
 # Install policycoreutils for each node
 for newnode in "${all[@]}"; do
-  ssh $user@$newnode sudo su <<EOF
+  ssh $user@$newnode -i ~/.ssh/$certName sudo su <<EOF
   NEEDRESTART_MODE=a apt update && apt upgrade -y
   apt-get install policycoreutils -y
   exit
@@ -90,16 +116,35 @@ mkdir ~/.kube
 k3sup install \
   --ip $master1 \
   --user $user \
+  --tls-san $vip \
   --cluster \
   --k3s-version $k3sVersion \
-  --k3s-extra-args "--node-ip=$master1 --node-taint node-role.kubernetes.io/master=true:NoSchedule" \
+  --k3s-extra-args "--disable traefik --disable servicelb --flannel-iface=$interface --node-ip=$master1 --node-taint node-role.kubernetes.io/master=true:NoSchedule" \
   --merge \
   --sudo \
   --local-path $HOME/.kube/config \
+  # --ssh-key $HOME/.ssh/$certName \
   --context k3s-ha
 echo -e " \033[32;5mFirst Node bootstrapped successfully!\033[0m"
 
-# Step 2: Add new master nodes (servers) & workers
+# Step 2: Install Kube-VIP for HA
+kubectl apply -f https://kube-vip.io/manifests/rbac.yaml
+
+# Step 3: Download kube-vip
+curl -sO https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3s-metallb/kube-vip.yaml
+cat kube-vip | sed 's/$interface/'$interface'/g; s/$vip/'$vip'/g' > $HOME/kube-vip.yaml
+
+# Step 4: Copy kube-vip.yaml to master1
+scp -i ~/.ssh/$certName $HOME/kube-vip.yaml $user@$master1:~/kube-vip.yaml
+
+
+# Step 5: Connect to Master1 and move kube-vip.yaml
+ssh $user@$master1 -i ~/.ssh/$certName <<- EOF
+  sudo mkdir -p /var/lib/rancher/k3s/server/manifests
+  sudo mv kube-vip.yaml /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+EOF
+
+# Step 6: Add new master nodes (servers) & workers
 for newnode in "${masters[@]}"; do
   k3sup join \
     --ip $newnode \
@@ -108,7 +153,8 @@ for newnode in "${masters[@]}"; do
     --k3s-version $k3sVersion \
     --server \
     --server-ip $master1 \
-    --k3s-extra-args "--node-ip=$newnode --node-taint node-role.kubernetes.io/master=true:NoSchedule" \
+    # --ssh-key $HOME/.ssh/$certName \
+    --k3s-extra-args "--disable traefik --disable servicelb --flannel-iface=$interface --node-ip=$newnode --node-taint node-role.kubernetes.io/master=true:NoSchedule" \
     --server-user $user
   echo -e " \033[32;5mMaster node joined successfully!\033[0m"
 done
@@ -121,12 +167,51 @@ for newagent in "${workers[@]}"; do
     --sudo \
     --k3s-version $k3sVersion \
     --server-ip $master1 \
-    --k3s-extra-args "--server-ip $master1 --node-ip=$newagent --node-label \"worker=true\""
+    # --ssh-key $HOME/.ssh/$certName \
+    --k3s-extra-args "--server-ip $master1 --node-label \"longhorn=true\" --node-label \"worker=true\""
   echo -e " \033[32;5mAgent node joined successfully!\033[0m"
 done
 
+# Step 7: Install kube-vip as network LoadBalancer - Install the kube-vip Cloud Provider
+kubectl apply -f https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
+
+# Step 8: Install Metallb
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/manifests/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+# Download ipAddressPool and configure using lbrange above
+curl -sO https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3s-metallb/ipAddressPool.yaml
+sed -i 's/$lbrange/'$lbrange'/g' $HOME/ipAddressPool.yaml
+kubectl apply -f $HOME/ipAddressPool.yaml
+kubectl delete ValidatingWebhookConfiguration metallb-webhook-configuration
+
+# Step 9: Test with Nginx
+kubectl apply -f https://raw.githubusercontent.com/inlets/inlets-operator/master/contrib/nginx-sample-deployment.yaml -n default
+kubectl expose deployment nginx-1 --port=80 --type=LoadBalancer -n default
+
+echo -e " \033[32;5mWaiting for K3S to sync and LoadBalancer to come online\033[0m"
+
+while [[ $(kubectl get pods -l app=nginx -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do
+   sleep 1
+done
+
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
+
+
+# Step 10: Deploy IP Pools and l2Advertisement
+kubectl wait --namespace metallb-system \
+                --for=condition=ready pod \
+                --selector=component=controller \
+                --timeout=120s
+kubectl apply -f ipAddressPool.yaml
+kubectl apply -f https://raw.githubusercontent.com/JamesTurland/JimsGarage/main/Kubernetes/K3S-Deploy/l2Advertisement.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
 kubectl get nodes
 kubectl get svc
 kubectl get pods --all-namespaces -o wide
 
-echo -e " \033[32;5mHappy learing! \033[0m"
+echo -e " \033[32;5mHappy Kubing! Access Nginx at EXTERNAL-IP above\033[0m"
+
+
+
+# kubectl expose svc/grafana --port=80 --type=LoadBalancer -n monitoring
+# kubectl port-forward -n monitoring grafana-84bffcb695-r7h2k 52222:3000
