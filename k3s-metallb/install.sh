@@ -46,9 +46,9 @@ sudo timedatectl set-ntp off
 sudo timedatectl set-ntp on
 
 # Move SSH certs to ~/.ssh and change permissions
-# cp /home/$user/{$certName,$certName.pub} /home/$user/.ssh
-# chmod 600 /home/$user/.ssh/$certName 
-# chmod 644 /home/$user/.ssh/$certName.pub
+cp /home/$user/{$certName,$certName.pub} /home/$user/.ssh
+chmod 600 /home/$user/.ssh/$certName 
+chmod 644 /home/$user/.ssh/$certName.pub
 
 # Install k3sup to local machine if not already present
 if ! command -v k3sup version &> /dev/null
@@ -123,7 +123,7 @@ k3sup install \
   --merge \
   --sudo \
   --local-path $HOME/.kube/config \
-  # --ssh-key $HOME/.ssh/$certName \
+  --ssh-key $HOME/.ssh/$certName \
   --context k3s-ha
 echo -e " \033[32;5mFirst Node bootstrapped successfully!\033[0m"
 
@@ -132,7 +132,7 @@ kubectl apply -f https://kube-vip.io/manifests/rbac.yaml
 
 # Step 3: Download kube-vip
 curl -sO https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3s-metallb/kube-vip.yaml
-cat kube-vip | sed 's/$interface/'$interface'/g; s/$vip/'$vip'/g' > $HOME/kube-vip.yaml
+sed -i 's/$interface/'$interface'/g; s/$vip/'$vip'/g' $HOME/kube-vip.yaml
 
 # Step 4: Copy kube-vip.yaml to master1
 scp -i ~/.ssh/$certName $HOME/kube-vip.yaml $user@$master1:~/kube-vip.yaml
@@ -153,7 +153,7 @@ for newnode in "${masters[@]}"; do
     --k3s-version $k3sVersion \
     --server \
     --server-ip $master1 \
-    # --ssh-key $HOME/.ssh/$certName \
+    --ssh-key $HOME/.ssh/$certName \
     --k3s-extra-args "--disable traefik --disable servicelb --flannel-iface=$interface --node-ip=$newnode --node-taint node-role.kubernetes.io/master=true:NoSchedule" \
     --server-user $user
   echo -e " \033[32;5mMaster node joined successfully!\033[0m"
@@ -167,8 +167,8 @@ for newagent in "${workers[@]}"; do
     --sudo \
     --k3s-version $k3sVersion \
     --server-ip $master1 \
-    # --ssh-key $HOME/.ssh/$certName \
-    --k3s-extra-args "--server-ip $master1 --node-label \"longhorn=true\" --node-label \"worker=true\""
+    --ssh-key $HOME/.ssh/$certName \
+    --k3s-extra-args "--server-ip $master1 --node-ip=$newagent --node-label \"longhorn=true\" --node-label \"worker=true\""
   echo -e " \033[32;5mAgent node joined successfully!\033[0m"
 done
 
@@ -178,11 +178,16 @@ kubectl apply -f https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provi
 # Step 8: Install Metallb
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/manifests/namespace.yaml
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/refs/heads/main/config/manifests/metallb-native.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/refs/heads/main/config/manifests/namespace.yaml
+
+
 # Download ipAddressPool and configure using lbrange above
 curl -sO https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3s-metallb/ipAddressPool.yaml
+kubectl delete ValidatingWebhookConfiguration metallb-webhook-configuration
 sed -i 's/$lbrange/'$lbrange'/g' $HOME/ipAddressPool.yaml
 kubectl apply -f $HOME/ipAddressPool.yaml
-kubectl delete ValidatingWebhookConfiguration metallb-webhook-configuration
+
 
 # Step 9: Test with Nginx
 kubectl apply -f https://raw.githubusercontent.com/inlets/inlets-operator/master/contrib/nginx-sample-deployment.yaml -n default
@@ -210,8 +215,6 @@ kubectl get svc
 kubectl get pods --all-namespaces -o wide
 
 echo -e " \033[32;5mHappy Kubing! Access Nginx at EXTERNAL-IP above\033[0m"
-
-
 
 # kubectl expose svc/grafana --port=80 --type=LoadBalancer -n monitoring
 # kubectl port-forward -n monitoring grafana-84bffcb695-r7h2k 52222:3000
