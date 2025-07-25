@@ -176,8 +176,7 @@ done
 kubectl apply -f https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
 
 # Step 8: Install Metallb
-kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/manifests/namespace.yaml
-kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.15.2/config/manifests/metallb-native.yaml
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/refs/heads/main/config/manifests/metallb-native.yaml
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/refs/heads/main/config/manifests/namespace.yaml
 
@@ -187,6 +186,7 @@ curl -sO https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3
 kubectl delete ValidatingWebhookConfiguration metallb-webhook-configuration
 sed -i 's/$lbrange/'$lbrange'/g' $HOME/ipAddressPool.yaml
 kubectl apply -f $HOME/ipAddressPool.yaml
+
 
 
 # Step 9: Test with Nginx
