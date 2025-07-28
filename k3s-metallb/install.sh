@@ -137,7 +137,6 @@ sed -i 's/$interface/'$interface'/g; s/$vip/'$vip'/g' $HOME/kube-vip.yaml
 # Step 4: Copy kube-vip.yaml to master1
 scp -i ~/.ssh/$certName $HOME/kube-vip.yaml $user@$master1:~/kube-vip.yaml
 
-
 # Step 5: Connect to Master1 and move kube-vip.yaml
 ssh $user@$master1 -i ~/.ssh/$certName <<- EOF
   sudo mkdir -p /var/lib/rancher/k3s/server/manifests
@@ -180,14 +179,11 @@ kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.15.2/confi
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/refs/heads/main/config/manifests/metallb-native.yaml
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/refs/heads/main/config/manifests/namespace.yaml
 
-
 # Download ipAddressPool and configure using lbrange above
 curl -sO https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3s-metallb/ipAddressPool.yaml
 kubectl delete ValidatingWebhookConfiguration metallb-webhook-configuration
 sed -i 's/$lbrange/'$lbrange'/g' $HOME/ipAddressPool.yaml
 kubectl apply -f $HOME/ipAddressPool.yaml
-
-
 
 # Step 9: Test with Nginx
 kubectl apply -f https://raw.githubusercontent.com/inlets/inlets-operator/master/contrib/nginx-sample-deployment.yaml -n default
@@ -201,14 +197,13 @@ done
 
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
 
-
 # Step 10: Deploy IP Pools and l2Advertisement
 kubectl wait --namespace metallb-system \
                 --for=condition=ready pod \
                 --selector=component=controller \
                 --timeout=120s
 kubectl apply -f ipAddressPool.yaml
-kubectl apply -f https://raw.githubusercontent.com/JamesTurland/JimsGarage/main/Kubernetes/K3S-Deploy/l2Advertisement.yaml
+kubectl apply -f https://raw.githubusercontent.com/jithunarayanan/k3s/refs/heads/main/k3s-metallb/L2Advertisement.yaml
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
 kubectl get nodes
 kubectl get svc
